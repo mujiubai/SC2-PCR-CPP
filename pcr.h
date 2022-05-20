@@ -14,6 +14,7 @@
 #include <pcl/features/fpfh_omp.h>
 #include <pcl/features/fpfh.h>
 #include <pcl/filters/voxel_grid.h>
+#include <pcl/common/transforms.h>
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
@@ -42,12 +43,15 @@ namespace sc2pcr
         float filterSize;
         float dthr;
         float pointThre;//计算点变换是否正确的阈值
+        float seedsRatio;
+        float radius;
         int k1;
         int k2;
         Eigen::Matrix4f transMatrix;
         Eigen::MatrixXf scMat;
         Eigen::MatrixXd seedHardMat;
         Eigen::MatrixXd sc2Mat;
+        int leadVecIter;
 
         void init();
         void computeFpfh(pointCloudPtr cloud, fpfhPtr fpfh);
@@ -58,11 +62,11 @@ namespace sc2pcr
         PCR(char **argv);
         bool lodaData();
         void registration();
-        void pickSeeds(const Eigen::MatrixXf &scMat, vector<int> &seeds, int sn);
+        void pickSeeds(const pointCloudPtr sour, const pointCloudPtr tar,const Eigen::MatrixXf &scMat, vector<int> &seeds,const vector<pair<int, int>> &corres, int sn);
         Eigen::Matrix4f getBestTrans();
         void readConfig(string fileName);
         void calScMat(Eigen::MatrixXf &scMat, const pointCloudPtr sour, const pointCloudPtr tar, const vector<pair<int, int>> &corres);
-        void calScHardMat(Eigen::MatrixXd &hardMat, const Eigen::MatrixXf &scMat, const vector<int> &seeds, float dthr);
+        void calScHardMat(Eigen::MatrixXd &hardMat, const Eigen::MatrixXf &scMat, const vector<int> &seeds);
         void calSc2Mat(Eigen::MatrixXd &sc2Mat, const Eigen::MatrixXd &hardMat);
         Eigen::Matrix4f calBestTrans(const pointCloudPtr sour, const pointCloudPtr tar, const Eigen::MatrixXd &sc2Mat, const vector<int> &seeds, const vector<pair<int, int>> &corres);
         Eigen::Matrix4f calTrans(const pointCloudPtr sour, const pointCloudPtr tar, const Eigen::MatrixXd &sc2Mat,const vector<pair<int, int>> &corres, const vector<int> &seeds, const int index);

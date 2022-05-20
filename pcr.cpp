@@ -9,27 +9,28 @@ void PCR::registration()
 {
     vector<pair<int, int>> corres;
     vector<int> seeds; //存储种子点 其值指在scMat中的序列号
-    // vector<vector<float>> scMat;
-    // vector<vector<int>> scHardMat;
-    // vector<vector<int>> sc2Mat;
-
     pointCloudPtr sour, tar;
-    sour = this->cloudSourDs;
-    tar = this->cloudSourDs;
 
     init();
     lodaData();
     dsCloud(filterSize);
+    sour = this->cloudSourDs;
+    tar = this->cloudTarDs;
     computeFpfh(sour, sourFpfh);
-    computeFpfh(tar, sourFpfh);
+    computeFpfh(tar, tarFpfh);
     matchPair(sour, tar, sourFpfh, tarFpfh, corres);
     calScMat(this->scMat, sour, tar, corres);
-    calScHardMat(this->seedHardMat, scMat, seeds, 0.5);
+    pickSeeds(sour, tar, scMat, seeds, corres, this->seedsRatio * scMat.cols());
+    calScHardMat(this->seedHardMat, scMat, seeds);
     calSc2Mat(this->sc2Mat, seedHardMat);
-    pickSeeds(scMat,seeds,0.1*scMat.cols());
 
-    Eigen::Matrix4f trans=calBestTrans(sour,tar,sc2Mat,seeds,corres);
-    
+    Eigen::Matrix4f trans = calBestTrans(sour, tar, sc2Mat, seeds, corres);
+    cout << trans << endl;
+
+    pcl::PointCloud<pcl::PointXYZ>::Ptr cloudSourTrans(new pcl::PointCloud<pcl::PointXYZ>);
+    pcl::transformPointCloud(*cloudSour, *cloudSourTrans, trans);
+    *cloudSourTrans += *cloudTar;
+    pcl::io::savePLYFileBinary("cloud_out.ply", *cloudSourTrans);
 }
 
 PCR::PCR(char **argv)
@@ -67,8 +68,16 @@ void PCR::readConfig(string fileName)
 {
     unordered_map<string, string> confMap;
     readConfigFile(fileName, confMap);
-    sourFilePath = confMap.find("cloudSour") != confMap.end() ? confMap["cloudSour"] : "source.las";
-    tarFilePath = confMap.find("cloudTarg") != confMap.end() ? confMap["cloudTarg"] : "target.las";
+    this->sourFilePath = confMap.find("cloudSour") != confMap.end() ? confMap["cloudSour"] : "source.las";
+    this->tarFilePath = confMap.find("cloudTarg") != confMap.end() ? confMap["cloudTarg"] : "target.las";
+    this->filterSize = confMap.find("filterSize") != confMap.end() ? atof(confMap["filterSize"].c_str()) : 1;
+    this->dthr = confMap.find("dthr") != confMap.end() ? atof(confMap["dthr"].c_str()) : 1;
+    this->pointThre = confMap.find("pointThre") != confMap.end() ? atof(confMap["pointThre"].c_str()) : 1;
+    this->k1 = confMap.find("k1") != confMap.end() ? atoi(confMap["k1"].c_str()) : 30;
+    this->k2 = confMap.find("k2") != confMap.end() ? atoi(confMap["k2"].c_str()) : 20;
+    this->leadVecIter = confMap.find("leadVecIter") != confMap.end() ? atoi(confMap["leadVecIter"].c_str()) : 20;
+    this->seedsRatio = confMap.find("seedsRatio") != confMap.end() ? atof(confMap["seedsRatio"].c_str()) : 0.1;
+    this->radius = confMap.find("radius") != confMap.end() ? atof(confMap["radius"].c_str()) : 1;
     printf("config data load success!\n");
 }
 
@@ -136,21 +145,8 @@ void PCR::computeFpfh(pointCloudPtr cloud, fpfhPtr fpfh)
     fest.setInputCloud(cloud);
     fest.setInputNormals(point_normal);
     fest.compute(*fpfh);
-}
 
-void BuildKDTree(const fpfhPtr &data, KDTree *tree)
-{
-    int rows, dim;
-    rows = (int)data->size();
-    dim = 33;
-    std::vector<float> dataset(rows * dim);
-    flann::Matrix<float> dataset_mat(&dataset[0], rows, dim);
-    for (int i = 0; i < rows; i++)
-        for (int j = 0; j < dim; j++)
-            dataset[i * dim + j] = data->points[i].histogram[j];
-    KDTree temp_tree(dataset_mat, flann::KDTreeSingleIndexParams(15));
-    temp_tree.buildIndex();
-    *tree = temp_tree;
+    printf("compute the cloud FPFH feature finish.\n");
 }
 
 void SearchKDTree(KDTree *tree, const fpfhPtr &input, int index,
@@ -176,71 +172,150 @@ void SearchKDTree(KDTree *tree, const fpfhPtr &input, int index,
     tree->knnSearch(query_mat, indices_mat, dists_mat, nn, flann::SearchParams(128));
 }
 
+void BuildKDTree(const fpfhPtr &data, KDTree *tree)
+{
+    int rows, dim;
+    rows = (int)data->size();
+    dim = 33;
+    std::vector<float> dataset(rows * dim);
+    flann::Matrix<float> dataset_mat(&dataset[0], rows, dim);
+    for (int i = 0; i < rows; i++)
+        for (int j = 0; j < dim; j++)
+            dataset[i * dim + j] = data->points[i].histogram[j];
+    KDTree temp_tree(dataset_mat, flann::KDTreeSingleIndexParams(15));
+    temp_tree.buildIndex();
+    *tree = temp_tree;
+}
+
 void PCR::matchPair(pointCloudPtr sour, pointCloudPtr tar, fpfhPtr sourFpfh, fpfhPtr tarFpfh, vector<pair<int, int>> &corres)
 {
     KDTree sourFeaTree(flann::KDTreeSingleIndexParams(15));
     KDTree tarFeaTree(flann::KDTreeSingleIndexParams(15));
     vector<int> indices;
     vector<float> dists;
-
     BuildKDTree(sourFpfh, &sourFeaTree);
     BuildKDTree(tarFpfh, &tarFeaTree);
-
-    corres.resize(sour->size());
+    // corres.resize(sour->size());
     for (int i = 0; i < sour->size(); ++i)
     {
         SearchKDTree(&tarFeaTree, sourFpfh, i, indices, dists, 1);
         int j = indices[0];
-        corres.push_back(pair<int, int>(i, j));
+        SearchKDTree(&sourFeaTree, tarFpfh, j, indices, dists, 1);
+        if(i==indices[0]){
+            corres.push_back(pair<int,int>(i,j));
+        }
+        // corres[i].first = i;
+        // corres[i].second = j;
     }
+    printf("match pair success!\n");
 }
 
-void cloudFilter(pointCloudPtr cloud, pointCloudPtr cloudFilter, float leafSize)
+void cloudFilter(pointCloudPtr cloud, pointCloudPtr cloudOut, float leafSize)
 {
     pcl::VoxelGrid<pcl::PointXYZ> filter;
     filter.setInputCloud(cloud);
     filter.setLeafSize(leafSize, leafSize, leafSize);
-    filter.filter(*cloudFilter);
+    filter.filter(*cloudOut);
 }
 
 void PCR::dsCloud(float filterSize)
 {
     cloudFilter(cloudSour, cloudSourDs, filterSize);
     cloudFilter(cloudTar, cloudTarDs, filterSize);
+    printf("DownSample point cloud success, the filter size is %f \n", filterSize);
 }
 
 template <class T>
-void calLeadEigenVec(const T &Mat, T &vec)
+void calLeadEigenVec(const T &Mat, vector<float> &vec, const int iterNum)
 {
-    int maxVal = INT_MIN, maxInde = -1;
+    // int maxVal = INT_MIN, maxInde = -1;
     int n = Mat.cols();
-    vec.resize(1, n);
+    vec.resize(n);
 
-    Eigen::EigenSolver<T> solver(Mat);
-    T D = solver.pseudoEigenvalueMatrix();
-    T V = solver.pseudoEigenvectors();
+    // Eigen::EigenSolver<T> solver(Mat);
 
-    for (int i = 0; i < n; ++i)
+    // T D = solver.pseudoEigenvalueMatrix();
+    // T V = solver.pseudoEigenvectors();
+
+    // for (int i = 0; i < n; ++i)
+    // {
+    //     if (maxVal < D(i, i))
+    //     {
+    //         maxVal = D(i, i);
+    //         maxInde = i;
+    //     }
+    // }
+
+    // for (int i = 0; i < n; ++i)
+    // {
+    //     vec[i] = V(maxInde, i);
+    // }
+
+    Eigen::MatrixXf V = Eigen::MatrixXf::Random(n, 1).array().abs();
+    for (int i = 0; i < iterNum; ++i)
     {
-        if (maxVal < D(i, i))
+        V = Mat * V;
+        double sum = 0;
+        for (int j = 0; j < n; ++j)
         {
-            maxVal = D(i, i);
-            maxInde = i;
+            sum += pow(V(j, 0), 2);
+        }
+        for (int j = 0; j < n; ++j)
+        {
+            V(j, 0) /= sum;
         }
     }
 
     for (int i = 0; i < n; ++i)
     {
-        vec(0, i) = V(maxInde, i);
+        vec[i] = V(i, 0);
     }
 }
 
-void PCR::pickSeeds(const Eigen::MatrixXf &scMat, vector<int> &seeds, int sn)
+bool myCompareVec(pair<float, int> &a, pair<float, int> &b)
+{
+    return a.first > b.first;
+}
+
+void PCR::pickSeeds(const pointCloudPtr sour, const pointCloudPtr tar, const Eigen::MatrixXf &scMat, vector<int> &seeds, const vector<pair<int, int>> &corres, int sn)
 {
     seeds.resize(sn);
-    Eigen::MatrixXf leadVec;
-    calLeadEigenVec<Eigen::MatrixXf>(scMat, leadVec);
+    vector<float> leadVec;
+    calLeadEigenVec<Eigen::MatrixXf>(scMat, leadVec, leadVecIter);
     //从特征向量中选择最大的sn个点，且一定范围内不重复选点
+    vector<pair<float, int>> sortLeadVec(leadVec.size());
+    for (int i = 0; i < leadVec.size(); ++i)
+    {
+        sortLeadVec[i].first = leadVec[i];
+        sortLeadVec[i].second = i;
+    }
+    sort(sortLeadVec.begin(), sortLeadVec.end(), myCompareVec); //这里是直接比较大小，没考虑绝对值
+
+    //非极大线性抑制
+    for (int i = 0; i < sortLeadVec.size(); ++i)
+    {
+        if (sortLeadVec[i].first == 0)
+            continue;
+        pcl::PointXYZ &a = sour->points[corres[sortLeadVec[i].second].first];
+        for (int j = i + 1; j < sortLeadVec.size(); ++j)
+        {
+            pcl::PointXYZ &b = sour->points[corres[sortLeadVec[j].second].first];
+            double dd = sqrt(pow(a.x - b.x, 2) + pow(a.y - b.y, 2) + pow(a.z - b.z, 2));
+            if (dd <= radius)
+            {
+                sortLeadVec[j].first = 0;
+            }
+        }
+    }
+
+    //经过非极大线性抑制后再次排序，并取前sn个为种子点
+    sort(sortLeadVec.begin(), sortLeadVec.end(), myCompareVec);
+    for (int i = 0; i < sn; ++i)
+    {
+        seeds[i] = sortLeadVec[i].second;
+    }
+
+    printf("pick seed pair success! The number of seeds is %d\n", sn);
 }
 
 double calDis(const pcl::PointXYZ &p, const pcl::PointXYZ &q)
@@ -266,6 +341,7 @@ void PCR::calScMat(Eigen::MatrixXf &scMat, const pointCloudPtr sour, const point
             scMat(j, i) = scMat(i, j);
         }
     }
+    printf("calculate first order sc matrix success!\n");
 }
 
 template <typename T>
@@ -289,9 +365,10 @@ void PCR::calSc2Mat(Eigen::MatrixXd &sc2Mat, const Eigen::MatrixXd &hardMat)
             }
         }
     }
+    printf("calculate the second order SC matrix success!\n");
 }
 
-void PCR::calScHardMat(Eigen::MatrixXd &hardMat, const Eigen::MatrixXf &scMat, const vector<int> &seeds, float dthr)
+void PCR::calScHardMat(Eigen::MatrixXd &hardMat, const Eigen::MatrixXf &scMat, const vector<int> &seeds)
 {
     int m = scMat.cols(), sn = seeds.size();
     hardMat.resize(sn, sn);
@@ -299,7 +376,7 @@ void PCR::calScHardMat(Eigen::MatrixXd &hardMat, const Eigen::MatrixXf &scMat, c
     {
         for (int j = i; j < sn; ++j)
         {
-            hardMat(i, j) = scMat(seeds[i], seeds[j]) < dthr ? 0 : 1;
+            hardMat(i, j) = scMat(seeds[i], seeds[j]) <= 0 ? 0 : 1;
             hardMat(j, i) = hardMat(i, j);
         }
     }
@@ -325,10 +402,10 @@ Eigen::Matrix4f PCR::calTrans(const pointCloudPtr sour, const pointCloudPtr tar,
     Eigen::MatrixXf leadVec;
     Eigen::MatrixXf cloudP(3, sn), cloudQ(3, sn);
     Eigen::MatrixXf H(3, 3);
-    Eigen::Matrix4f trans;//trans*P=Q
-    Eigen::Matrix3f transR;//transR*p+transT=Q
-    Eigen::MatrixXf transT(3,1);
-    Eigen::MatrixXf temP,temQ;
+    Eigen::Matrix4f trans;  // trans*P=Q
+    Eigen::Matrix3f transR; // transR*p+transT=Q
+    Eigen::MatrixXf transT(3, 1);
+    Eigen::MatrixXf temP, temQ;
     double meanPX = 0, meanPY = 0, meanPZ = 0;
     double meanQX = 0, meanQY = 0, meanQZ = 0;
 
@@ -352,7 +429,7 @@ Eigen::Matrix4f PCR::calTrans(const pointCloudPtr sour, const pointCloudPtr tar,
         {
             localScMat(i, j) = this->scMat(firstColIndex[i], firstColIndex[j]);
             localScMat(j, i) = localScMat(i, j);
-            localHardMat(i, j) = localScMat(i, j) < this->dthr ? 0 : 1;
+            localHardMat(i, j) = localScMat(i, j) <= 0 ? 0 : 1;
             localHardMat(j, i) = localHardMat(i, j);
         }
     }
@@ -402,8 +479,8 @@ Eigen::Matrix4f PCR::calTrans(const pointCloudPtr sour, const pointCloudPtr tar,
         meanQY += tt.y;
         meanQZ += tt.z;
     }
-    temP=cloudP.col(0);
-    temQ=cloudQ.col(0);
+    temP = cloudP.col(0);
+    temQ = cloudQ.col(0);
     meanPX /= sn;
     meanPY /= sn;
     meanPZ /= sn;
@@ -422,29 +499,33 @@ Eigen::Matrix4f PCR::calTrans(const pointCloudPtr sour, const pointCloudPtr tar,
     H = cloudP * cloudQ.transpose();
     Eigen::JacobiSVD<Eigen::MatrixXf> svdH(H, Eigen::DecompositionOptions::ComputeFullU | Eigen::DecompositionOptions::ComputeFullV);
     transR = svdH.matrixV() * svdH.matrixU().transpose();
-    transT=temQ-transR*temP;
-    for(int i=0;i<3;++i){
-        for(int j=0;j<3;++j){
-            trans(i,j)=transR(i,j);
+    transT = temQ - transR * temP;
+    for (int i = 0; i < 3; ++i)
+    {
+        for (int j = 0; j < 3; ++j)
+        {
+            trans(i, j) = transR(i, j);
         }
-        trans(3,i)=0;
-        trans(i,3)=transT(i);
+        trans(3, i) = 0;
+        trans(i, 3) = transT(i);
     }
-    trans(3,3)=1;
+    trans(3, 3) = 1;
 
     return trans;
-
 }
 
-int calCount(const pointCloudPtr sour, const pointCloudPtr tar,const vector<int> &seeds,Eigen::Matrix4f &trans, const vector<pair<int, int>> &corres,float thre){
-    int count=0;
-    for(int i=0;i<seeds.size();++i){
+int calCount(const pointCloudPtr sour, const pointCloudPtr tar, const vector<int> &seeds, Eigen::Matrix4f &trans, const vector<pair<int, int>> &corres, float thre)
+{
+    int count = 0;
+    for (int i = 0; i < seeds.size(); ++i)
+    {
         pcl::PointXYZ ts = sour->points[corres[seeds[i]].first];
         pcl::PointXYZ tt = tar->points[corres[seeds[i]].second];
-        float dx=trans(0,0)*ts.x+trans(0,1)*ts.y+trans(0,2)*ts.z+trans(0,3)-tt.x;
-        float dy=trans(1,0)*ts.x+trans(1,1)*ts.y+trans(1,2)*ts.z+trans(1,3)-tt.y;
-        float dz=trans(2,0)*ts.x+trans(2,1)*ts.y+trans(2,2)*ts.z+trans(2,3)-tt.z;
-        if(sqrt(pow(dx,2)+pow(dy,2)+pow(dz,2))<thre){
+        float dx = trans(0, 0) * ts.x + trans(0, 1) * ts.y + trans(0, 2) * ts.z + trans(0, 3) - tt.x;
+        float dy = trans(1, 0) * ts.x + trans(1, 1) * ts.y + trans(1, 2) * ts.z + trans(1, 3) - tt.y;
+        float dz = trans(2, 0) * ts.x + trans(2, 1) * ts.y + trans(2, 2) * ts.z + trans(2, 3) - tt.z;
+        if (sqrt(pow(dx, 2) + pow(dy, 2) + pow(dz, 2)) < thre)
+        {
             ++count;
         }
     }
@@ -456,17 +537,19 @@ Eigen::Matrix4f PCR::calBestTrans(const pointCloudPtr sour, const pointCloudPtr 
 {
     int n = seeds.size();
     int maxCount = -1, index = -1;
-    Eigen::Matrix4f finalTrans;    
+    Eigen::Matrix4f finalTrans;
 
     for (int i = 0; i < n; ++i)
     {
-        Eigen::Matrix4f curTrans=calTrans(sour,tar,sc2Mat,corres,seeds,i);
-        int count=calCount(sour,tar,seeds,curTrans,corres,this->pointThre);
-        if(count>maxCount){
-            maxCount=count;
-            finalTrans=curTrans;
+        Eigen::Matrix4f curTrans = calTrans(sour, tar, sc2Mat, corres, seeds, i);
+        int count = calCount(sour, tar, seeds, curTrans, corres, this->pointThre);
+        if (count >= maxCount)
+        {
+            maxCount = count;
+            finalTrans = curTrans;
+            index = i;
         }
     }
-
+    printf("max count:%d index:%d pointThre:%f\n ", maxCount, index, this->pointThre);
     return finalTrans;
 }
