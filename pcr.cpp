@@ -7,15 +7,21 @@ using namespace std;
 
 void PCR::registration()
 {
-    vector<pair<int, int>> corres;
-    vector<int> seeds; //存储种子点 其值指在scMat中的序列号
-    pointCloudPtr sour, tar;
 
     init();
     lodaData();
-    dsCloud(filterSize);
-    sour = this->cloudSourDs;
-    tar = this->cloudTarDs;
+    if (filterSize > 0)
+    {
+        dsCloud(filterSize);
+        sour = cloudSourDs;
+        tar = cloudTarDs;
+    }
+    else
+    {
+        sour = cloudSour;
+        sour = cloudTar;
+    }
+
     computeFpfh(sour, sourFpfh);
     computeFpfh(tar, tarFpfh);
     matchPair(sour, tar, sourFpfh, tarFpfh, corres);
@@ -33,10 +39,8 @@ void PCR::registration()
     pcl::io::savePLYFileBinary("cloud_out.ply", *cloudSourTrans);
 }
 
-PCR::PCR(char **argv)
+PCR::PCR(char **argv) : configFile(argv[1])
 {
-    string configFile = argv[1];
-    readConfig(configFile);
 }
 
 bool readConfigFile(string fileName, unordered_map<string, string> &confMap)
@@ -64,6 +68,7 @@ bool readConfigFile(string fileName, unordered_map<string, string> &confMap)
     return true;
 }
 
+//读取配置文件
 void PCR::readConfig(string fileName)
 {
     unordered_map<string, string> confMap;
@@ -78,9 +83,13 @@ void PCR::readConfig(string fileName)
     this->leadVecIter = confMap.find("leadVecIter") != confMap.end() ? atoi(confMap["leadVecIter"].c_str()) : 20;
     this->seedsRatio = confMap.find("seedsRatio") != confMap.end() ? atof(confMap["seedsRatio"].c_str()) : 0.1;
     this->radius = confMap.find("radius") != confMap.end() ? atof(confMap["radius"].c_str()) : 1;
+    this->fpfhSizeTimes = confMap.find("fpfhSizeTimes") != confMap.end() ? atof(confMap["fpfhSizeTimes"].c_str()) : 2;
+    this->normalSizeTimes = confMap.find("normalSizeTimes") != confMap.end() ? atof(confMap["normalSizeTimes"].c_str()) : 5;
+
     printf("config data load success!\n");
 }
 
+//初始化数据并读取配置文件
 void PCR::init()
 {
     this->cloudSour.reset(new pcl::PointCloud<pcl::PointXYZ>);
@@ -90,8 +99,10 @@ void PCR::init()
     this->sourFpfh.reset(new pcl::PointCloud<pcl::FPFHSignature33>());
     this->tarFpfh.reset(new pcl::PointCloud<pcl::FPFHSignature33>());
     this->transMatrix.Identity();
+    readConfig(configFile);
 }
 
+//加载点云数据，目前支持pcd和ply格式
 bool PCR::lodaData()
 {
     string fileName = this->sourFilePath;
@@ -130,18 +141,21 @@ bool PCR::lodaData()
     return true;
 }
 
+//计算FPFH特征
 void PCR::computeFpfh(pointCloudPtr cloud, fpfhPtr fpfh)
 {
+    //计算点的法向量
     pointnormal::Ptr point_normal(new pointnormal);
     pcl::NormalEstimationOMP<pcl::PointXYZ, pcl::PointNormal> est_normal;
-    est_normal.setNumberOfThreads(8);
+    est_normal.setNumberOfThreads(8);//使用核心数
     est_normal.setInputCloud(cloud);
-    est_normal.setRadiusSearch(0.2);
+    est_normal.setRadiusSearch(filterSize * normalSizeTimes);//设置搜索范围
     est_normal.compute(*point_normal);
 
+    //计算FPFH特征
     pcl::FPFHEstimationOMP<pcl::PointXYZ, pcl::PointNormal, pcl::FPFHSignature33> fest;
     fest.setNumberOfThreads(8);
-    fest.setRadiusSearch(0.5);
+    fest.setRadiusSearch(filterSize * fpfhSizeTimes);
     fest.setInputCloud(cloud);
     fest.setInputNormals(point_normal);
     fest.compute(*fpfh);
@@ -149,6 +163,7 @@ void PCR::computeFpfh(pointCloudPtr cloud, fpfhPtr fpfh)
     printf("compute the cloud FPFH feature finish.\n");
 }
 
+//搜索FPFH特征最近邻
 void SearchKDTree(KDTree *tree, const fpfhPtr &input, int index,
                   std::vector<int> &indices,
                   std::vector<float> &dists, int nn)
@@ -162,8 +177,6 @@ void SearchKDTree(KDTree *tree, const fpfhPtr &input, int index,
         query[i] = input->points[index].histogram[i];
     flann::Matrix<float> query_mat(&query[0], rows_t, dim);
 
-    indices.clear();
-    dists.clear();
     indices.resize(rows_t * nn);
     dists.resize(rows_t * nn);
     flann::Matrix<int> indices_mat(&indices[0], rows_t, nn);
@@ -172,6 +185,7 @@ void SearchKDTree(KDTree *tree, const fpfhPtr &input, int index,
     tree->knnSearch(query_mat, indices_mat, dists_mat, nn, flann::SearchParams(128));
 }
 
+//建立FPFH特征的KDtree
 void BuildKDTree(const fpfhPtr &data, KDTree *tree)
 {
     int rows, dim;
@@ -187,6 +201,7 @@ void BuildKDTree(const fpfhPtr &data, KDTree *tree)
     *tree = temp_tree;
 }
 
+//匹配两个点云中的特征对
 void PCR::matchPair(pointCloudPtr sour, pointCloudPtr tar, fpfhPtr sourFpfh, fpfhPtr tarFpfh, vector<pair<int, int>> &corres)
 {
     KDTree sourFeaTree(flann::KDTreeSingleIndexParams(15));
@@ -196,20 +211,25 @@ void PCR::matchPair(pointCloudPtr sour, pointCloudPtr tar, fpfhPtr sourFpfh, fpf
     BuildKDTree(sourFpfh, &sourFeaTree);
     BuildKDTree(tarFpfh, &tarFeaTree);
     // corres.resize(sour->size());
-    for (int i = 0; i < sour->size(); ++i)
+    //只有当都互为最近邻时 才添加为corres
+    vector<int> corres_st(sour->size(), -1), corres_ts(tar->size(), -1);
+    for (int i = 0; i < tar->size(); ++i)
     {
         SearchKDTree(&tarFeaTree, sourFpfh, i, indices, dists, 1);
         int j = indices[0];
-        SearchKDTree(&sourFeaTree, tarFpfh, j, indices, dists, 1);
-        if(i==indices[0]){
-            corres.push_back(pair<int,int>(i,j));
+
+        if (corres_ts[j] == -1)
+        {
+            SearchKDTree(&sourFeaTree, tarFpfh, j, indices, dists, 1);
+            corres_ts[j] = indices[0];
+            corres.push_back(pair<int, int>(i, j));
         }
-        // corres[i].first = i;
-        // corres[i].second = j;
     }
-    printf("match pair success!\n");
+
+    printf("match pair success,the number of pairs is %d \n", int(corres.size()));
 }
 
+//降采样点云
 void cloudFilter(pointCloudPtr cloud, pointCloudPtr cloudOut, float leafSize)
 {
     pcl::VoxelGrid<pcl::PointXYZ> filter;
@@ -225,33 +245,15 @@ void PCR::dsCloud(float filterSize)
     printf("DownSample point cloud success, the filter size is %f \n", filterSize);
 }
 
+//计算主特征向量
 template <class T>
 void calLeadEigenVec(const T &Mat, vector<float> &vec, const int iterNum)
 {
-    // int maxVal = INT_MIN, maxInde = -1;
+    //power iteration 算法计算主特征向量
     int n = Mat.cols();
     vec.resize(n);
-
-    // Eigen::EigenSolver<T> solver(Mat);
-
-    // T D = solver.pseudoEigenvalueMatrix();
-    // T V = solver.pseudoEigenvectors();
-
-    // for (int i = 0; i < n; ++i)
-    // {
-    //     if (maxVal < D(i, i))
-    //     {
-    //         maxVal = D(i, i);
-    //         maxInde = i;
-    //     }
-    // }
-
-    // for (int i = 0; i < n; ++i)
-    // {
-    //     vec[i] = V(maxInde, i);
-    // }
-
     Eigen::MatrixXf V = Eigen::MatrixXf::Random(n, 1).array().abs();
+
     for (int i = 0; i < iterNum; ++i)
     {
         V = Mat * V;
@@ -270,6 +272,23 @@ void calLeadEigenVec(const T &Mat, vector<float> &vec, const int iterNum)
     {
         vec[i] = V(i, 0);
     }
+    //使用特征分解
+        // int maxVal = INT_MIN, maxInde = -1;
+    // Eigen::EigenSolver<T> solver(Mat);
+    // T D = solver.pseudoEigenvalueMatrix();
+    // T V = solver.pseudoEigenvectors();
+    // for (int i = 0; i < n; ++i)
+    // {
+    //     if (maxVal < D(i, i))
+    //     {
+    //         maxVal = D(i, i);
+    //         maxInde = i;
+    //     }
+    // }
+    // for (int i = 0; i < n; ++i)
+    // {
+    //     vec[i] = V(maxInde, i);
+    // }
 }
 
 bool myCompareVec(pair<float, int> &a, pair<float, int> &b)
@@ -277,19 +296,20 @@ bool myCompareVec(pair<float, int> &a, pair<float, int> &b)
     return a.first > b.first;
 }
 
+//选择种子点
 void PCR::pickSeeds(const pointCloudPtr sour, const pointCloudPtr tar, const Eigen::MatrixXf &scMat, vector<int> &seeds, const vector<pair<int, int>> &corres, int sn)
 {
     seeds.resize(sn);
     vector<float> leadVec;
     calLeadEigenVec<Eigen::MatrixXf>(scMat, leadVec, leadVecIter);
-    //从特征向量中选择最大的sn个点，且一定范围内不重复选点
+    //从特征向量中选择最大的sn个点，且一定范围内不重复选点（非极大线性抑制）
     vector<pair<float, int>> sortLeadVec(leadVec.size());
     for (int i = 0; i < leadVec.size(); ++i)
     {
         sortLeadVec[i].first = leadVec[i];
         sortLeadVec[i].second = i;
     }
-    sort(sortLeadVec.begin(), sortLeadVec.end(), myCompareVec); //这里是直接比较大小，没考虑绝对值
+    sort(sortLeadVec.begin(), sortLeadVec.end(), myCompareVec); //直接比较大小
 
     //非极大线性抑制
     for (int i = 0; i < sortLeadVec.size(); ++i)
@@ -323,6 +343,7 @@ double calDis(const pcl::PointXYZ &p, const pcl::PointXYZ &q)
     return sqrt(pow(p.x - q.x, 2) + pow(p.y - q.y, 2) + pow(p.z - q.z, 2));
 }
 
+//计算一阶空间兼容矩阵（SC mat）
 void PCR::calScMat(Eigen::MatrixXf &scMat, const pointCloudPtr sour, const pointCloudPtr tar, const vector<pair<int, int>> &corres)
 {
     int n = corres.size();
@@ -344,11 +365,7 @@ void PCR::calScMat(Eigen::MatrixXf &scMat, const pointCloudPtr sour, const point
     printf("calculate first order sc matrix success!\n");
 }
 
-template <typename T>
-void calLeadEigenVec(vector<vector<T>> &Mat, vector<float> &v)
-{
-}
-
+//计算二阶空间兼容矩阵
 void PCR::calSc2Mat(Eigen::MatrixXd &sc2Mat, const Eigen::MatrixXd &hardMat)
 {
     int n = hardMat.cols();
@@ -368,6 +385,7 @@ void PCR::calSc2Mat(Eigen::MatrixXd &sc2Mat, const Eigen::MatrixXd &hardMat)
     printf("calculate the second order SC matrix success!\n");
 }
 
+//计算一阶空间兼容矩阵的二值化矩阵，为计算二阶空间兼容矩阵做准备
 void PCR::calScHardMat(Eigen::MatrixXd &hardMat, const Eigen::MatrixXf &scMat, const vector<int> &seeds)
 {
     int m = scMat.cols(), sn = seeds.size();
@@ -387,14 +405,15 @@ bool compareCor(pair<int, int> &a, pair<int, int> &b)
     return a.first > b.first;
 }
 
+//计算每个共识集合的变换矩阵
 Eigen::Matrix4f PCR::calTrans(const pointCloudPtr sour, const pointCloudPtr tar, const Eigen::MatrixXd &sc2Mat, const vector<pair<int, int>> &corres, const vector<int> &seeds, const int index)
 {
     int n = sc2Mat.cols();
     int fn = this->k1;
     int sn = this->k2;
     vector<int> firstColIndex(fn); //存储第一阶段共识集合index
-    vector<int> secondColIndex(sn);
-    vector<pair<int, int>> firstCorr(n); //存储待排序的值 相似度，位置
+    vector<int> secondColIndex(sn);//存储第二阶段共识集合index
+    vector<pair<int, int>> firstCorr(n); //存储待排序的值： 相似度，位置
     vector<pair<int, int>> secondCorr(fn);
     Eigen::MatrixXf localScMat(fn, fn);
     Eigen::MatrixXd localHardMat(fn, fn);
@@ -514,6 +533,7 @@ Eigen::Matrix4f PCR::calTrans(const pointCloudPtr sour, const pointCloudPtr tar,
     return trans;
 }
 
+//计算种子corres经过矩阵变换后能变换正确的个数
 int calCount(const pointCloudPtr sour, const pointCloudPtr tar, const vector<int> &seeds, Eigen::Matrix4f &trans, const vector<pair<int, int>> &corres, float thre)
 {
     int count = 0;
@@ -533,6 +553,7 @@ int calCount(const pointCloudPtr sour, const pointCloudPtr tar, const vector<int
     return count;
 }
 
+//计算得到最终的矩阵变换
 Eigen::Matrix4f PCR::calBestTrans(const pointCloudPtr sour, const pointCloudPtr tar, const Eigen::MatrixXd &sc2Mat, const vector<int> &seeds, const vector<pair<int, int>> &corres)
 {
     int n = seeds.size();
