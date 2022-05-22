@@ -1,0 +1,12 @@
+cloudSour=source.ply
+cloudTarg=target.ply
+filterSize=0.05
+dthr=0.1
+pointThre=0.3
+k1=30
+k2=20
+leadVecIter=20
+seedsRatio=0.2
+radius=0.2
+normalSizeTimes=4
+fpfhSizeTimes=10
