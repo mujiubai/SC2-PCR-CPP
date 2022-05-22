@@ -59,10 +59,10 @@ bool readConfigFile(string fileName, unordered_map<string, string> &confMap)
         string line(tmp);
         size_t pos = line.find('='); //找到每行的“=”号位置，之前是key之后是value
         if (pos == string::npos)
-            return false;
+            continue;
 
         string tmpKey = line.substr(0, pos);                                //取=号之前
-        string tempValue = line.substr(pos + 1, line.find('\r') - pos - 1); //取=号之后
+        string tempValue = line.substr(pos + 1, line.find(' ') - pos - 1); //取=号之后
         confMap.insert(pair<string, string>(tmpKey, tempValue));
     }
     return true;
