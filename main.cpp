@@ -1,15 +1,8 @@
-#include <iostream>
-#include "pcr.h"
-
-void test(Eigen::MatrixXf &t){
-    t.resize(5,6);
-
-    return ;
-}
+#include"FPFHPCR.h"
 
 int main(int argc, char *argv[])
 {
-    sc2pcr::PCR pcr(argv);
+    sc2pcr::FPFHPCR pcr(argv);
     pcr.registration();
     
     return 0;

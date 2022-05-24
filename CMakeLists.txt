@@ -7,7 +7,7 @@ set (CMAKE_CXX_STANDARD 11)
 
 
 include_directories(${PCL_INCLUDE_DIRS})
-include_directories(${LIBLAS_INCLUDE_DIR})
+# include_directories(${LIBLAS_INCLUDE_DIR})
 
 link_directories(${PCL_LIBRARY_DIRS})
 add_definitions(${PCL_DEFINITIONS})
@@ -15,6 +15,6 @@ add_definitions(${PCL_DEFINITIONS})
 
 
 list(REMOVE_ITEM PCL_LIBRARIES "vtkproj4")
-add_executable(${PROJECT_NAME} main.cpp pcr.cpp)
+add_executable(${PROJECT_NAME} main.cpp pcr.cpp FPFHPCR.cpp ConfigRead.cpp)
 target_link_libraries (${PROJECT_NAME} ${PCL_LIBRARIES})
 install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin)
