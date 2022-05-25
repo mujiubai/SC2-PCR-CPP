@@ -326,7 +326,7 @@ void PCR::calWeight(vector<int> &Col)
         for (int j = i; j < n; ++j)
         {
             k2SC(i, j) = scMat(Col[i], Col[j]);
-            k2SC(j,i)=k2SC(i,j);
+            k2SC(j, i) = k2SC(i, j);
         }
     }
     Eigen::MatrixXf SC_ = k2SC * k2SC;
@@ -361,11 +361,12 @@ Eigen::Matrix4f PCR::calTrans(const int index)
     Eigen::MatrixXd localSc2Mat(fn, fn);
     Eigen::MatrixXf leadVec;
     Eigen::MatrixXf cloudP(3, sn), cloudQ(3, sn);
+    Eigen::MatrixXf cloudPtem(3, sn), cloudQtem(3, sn);
+    Eigen::MatrixXf transTem(3, sn);
     Eigen::MatrixXf H(3, 3);
     Eigen::Matrix4f trans;  // trans*P=Q
     Eigen::Matrix3f transR; // transR*p+transT=Q
     Eigen::MatrixXf transT(3, 1);
-    Eigen::MatrixXf temP, temQ;
     double meanPX = 0, meanPY = 0, meanPZ = 0;
     double meanQX = 0, meanQY = 0, meanQZ = 0;
 
@@ -439,14 +440,14 @@ Eigen::Matrix4f PCR::calTrans(const int index)
         meanQY += tt.y;
         meanQZ += tt.z;
     }
-    temP = cloudP.col(0);
-    temQ = cloudQ.col(0);
     meanPX /= sn;
     meanPY /= sn;
     meanPZ /= sn;
     meanQX /= sn;
     meanQY /= sn;
     meanQZ /= sn;
+    cloudPtem = cloudP;
+    cloudQtem = cloudQ;
     for (int i = 0; i < sn; ++i)
     {
         cloudP(0, i) -= meanPX;
@@ -459,7 +460,15 @@ Eigen::Matrix4f PCR::calTrans(const int index)
     H = cloudP * cloudQ.transpose();
     Eigen::JacobiSVD<Eigen::MatrixXf> svdH(H, Eigen::DecompositionOptions::ComputeFullU | Eigen::DecompositionOptions::ComputeFullV);
     transR = svdH.matrixV() * svdH.matrixU().transpose();
-    transT = temQ - transR * temP;
+    transTem = cloudQtem - transR * cloudPtem;
+
+    for (int i = 0; i < sn; ++i)
+    {
+        transT(0, 0) += transTem(0, i);
+        transT(1, 0) += transTem(1, i);
+        transT(2, 0) += transTem(2, i);
+    }
+    transT/= sn;
     for (int i = 0; i < 3; ++i)
     {
         for (int j = 0; j < 3; ++j)
@@ -467,7 +476,7 @@ Eigen::Matrix4f PCR::calTrans(const int index)
             trans(i, j) = transR(i, j);
         }
         trans(3, i) = 0;
-        trans(i, 3) = transT(i);
+        trans(i, 3) = transT(i,0);
     }
     trans(3, 3) = 1;
 
