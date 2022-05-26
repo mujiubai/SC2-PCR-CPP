@@ -16,6 +16,7 @@ namespace sc2pcr
         void calFeature();
         void matchPair();
         void registration();
+        void setCorres();
         FPFHPCR(char **argv) : PCR(argv) {}
     };
 }

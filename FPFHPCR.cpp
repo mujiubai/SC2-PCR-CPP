@@ -16,16 +16,16 @@ void FPFHPCR::computeFpfh(const pointCloudPtr cloud, fpfhPtr fpfh)
     pcl::NormalEstimationOMP<pcl::PointXYZ, pcl::PointNormal> est_normal;
     est_normal.setNumberOfThreads(8); //使用核心数
     est_normal.setInputCloud(cloud);
-    est_normal.setRadiusSearch(filterSize*normalSizeTimes); //设置搜索范围
+    est_normal.setRadiusSearch(filterSize * normalSizeTimes); //设置搜索范围
     est_normal.compute(*point_normal);
     //计算FPFH特征
     pcl::FPFHEstimationOMP<pcl::PointXYZ, pcl::PointNormal, pcl::FPFHSignature33> fest;
     fest.setNumberOfThreads(8);
-    fest.setRadiusSearch(filterSize*fpfhSizeTimes);
+    fest.setRadiusSearch(filterSize * fpfhSizeTimes);
     fest.setInputCloud(cloud);
     fest.setInputNormals(point_normal);
     fest.compute(*fpfh);
-    printf("%f %f\n",filterSize*normalSizeTimes,filterSize*fpfhSizeTimes);
+    // printf("%f %f\n",filterSize*normalSizeTimes,filterSize*fpfhSizeTimes);
     printf("compute the cloud FPFH feature finish.\n");
 }
 
@@ -75,6 +75,7 @@ void FPFHPCR::matchPair()
     vector<float> dists;
     BuildKDTree(sourFpfh, &sourFeaTree);
     BuildKDTree(tarFpfh, &tarFeaTree);
+    corres.reserve(sour->size());
     //只有当都互为最近邻时 才添加为corres
     vector<int> corres_st(sour->size(), -1), corres_ts(tar->size(), -1);
     for (int i = 0; i < sour->size(); ++i)
@@ -93,33 +94,20 @@ void FPFHPCR::matchPair()
     printf("match pair success,the number of pairs is %d \n", int(corres.size()));
 }
 
-void FPFHPCR::registration()
-{
-    init();
-    lodaData();
-    if (filterSize > 0)
-    {
-        dsCloud(filterSize);
-        sour = cloudSourDs;
-        tar = cloudTarDs;
-    }
-    else
-    {
-        sour = cloudSour;
-        tar = cloudTar;
-    }
+void FPFHPCR::setCorres(){
     calFeature();
     matchPair();
-    calScMat();
-    pickSeeds();
-    calScHardMat(seedHardMat, scMat, seeds);
-    calSc2Mat(sc2Mat, seedHardMat);
+}
 
-    Eigen::Matrix4f trans = calBestTrans();
-    cout << trans << endl;
+void FPFHPCR::registration()
+{
+
+    PCR::registration();
+    
+    cout << transMatrix << endl;
 
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloudSourTrans(new pcl::PointCloud<pcl::PointXYZ>);
-    pcl::transformPointCloud(*cloudSour, *cloudSourTrans, trans);
+    pcl::transformPointCloud(*cloudSour, *cloudSourTrans, transMatrix);
     pcl::io::savePLYFileBinary("cloudSour.ply", *cloudSourTrans);
     *cloudSourTrans += *cloudTar;
     pcl::io::savePLYFileBinary("cloud_out.ply", *cloudSourTrans);
@@ -130,6 +118,7 @@ void FPFHPCR::init()
     PCR::init();
     sourFpfh.reset(new pcl::PointCloud<pcl::FPFHSignature33>());
     tarFpfh.reset(new pcl::PointCloud<pcl::FPFHSignature33>());
-    config->setConfig(normalSizeTimes,"normalSizeTimes");
-    config->setConfig(fpfhSizeTimes,"fpfhSizeTimes");
+    config->setConfig(normalSizeTimes, "normalSizeTimes");
+    config->setConfig(fpfhSizeTimes, "fpfhSizeTimes");
+    printf("config test\n");
 }
